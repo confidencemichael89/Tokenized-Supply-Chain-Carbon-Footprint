@@ -1,76 +1,71 @@
-;; Entity Verification Contract
-;; Validates supply chain participants
+;; Generation Tracking Contract
+;; Records energy production
 
-(define-data-var admin principal tx-sender)
-
-;; Entity types: 1 = Supplier, 2 = Manufacturer, 3 = Distributor, 4 = Retailer
-(define-map entities
-  { entity-id: uint }
+(define-map generation-events
   {
-    principal: principal,
-    name: (string-utf8 100),
-    entity-type: uint,
-    verified: bool
+    node-id: (string-ascii 24),
+    timestamp: uint
+  }
+  {
+    amount: uint,
+    source-type: (string-ascii 10), ;; solar, wind, etc.
+    recorded-by: principal
   }
 )
 
-(define-data-var next-entity-id uint u1)
+(define-map node-total-generation
+  { node-id: (string-ascii 24) }
+  { total: uint }
+)
 
-;; Register a new entity
-(define-public (register-entity (name (string-utf8 100)) (entity-type uint))
-  (let ((entity-id (var-get next-entity-id)))
-    (begin
-      (asserts! (and (>= entity-type u1) (<= entity-type u4)) (err u1))
-      (map-insert entities
-        { entity-id: entity-id }
-        {
-          principal: tx-sender,
-          name: name,
-          entity-type: entity-type,
-          verified: false
-        }
-      )
-      (var-set next-entity-id (+ entity-id u1))
-      (ok entity-id)
+(define-read-only (get-generation-event (node-id (string-ascii 24)) (timestamp uint))
+  (map-get? generation-events { node-id: node-id, timestamp: timestamp })
+)
+
+(define-read-only (get-node-total-generation (node-id (string-ascii 24)))
+  (default-to { total: u0 } (map-get? node-total-generation { node-id: node-id }))
+)
+
+(define-public (record-generation
+    (node-id (string-ascii 24))
+    (amount uint)
+    (source-type (string-ascii 10)))
+  (let (
+    (timestamp block-height)
+    (current-total (get total (get-node-total-generation node-id)))
+    (node-contract (contract-call? .node-verification get-node node-id))
+  )
+    ;; Check if node exists and is verified
+    (asserts! (is-some node-contract) (err u1)) ;; Node not found
+    (asserts! (contract-call? .node-verification is-node-verified node-id) (err u2)) ;; Node not verified
+
+    ;; Record the generation event
+    (map-set generation-events
+      { node-id: node-id, timestamp: timestamp }
+      {
+        amount: amount,
+        source-type: source-type,
+        recorded-by: tx-sender
+      }
     )
-  )
-)
 
-;; Verify an entity (admin only)
-(define-public (verify-entity (entity-id uint))
-  (begin
-    (asserts! (is-eq tx-sender (var-get admin)) (err u403))
-    (match (map-get? entities { entity-id: entity-id })
-      entity (begin
-        (map-set entities
-          { entity-id: entity-id }
-          (merge entity { verified: true })
-        )
-        (ok true)
-      )
-      (err u404)
+    ;; Update the total generation for this node
+    (map-set node-total-generation
+      { node-id: node-id }
+      { total: (+ current-total amount) }
     )
+
+    (ok timestamp)
   )
 )
 
-;; Check if an entity is verified
-(define-read-only (is-verified (entity-id uint))
-  (match (map-get? entities { entity-id: entity-id })
-    entity (ok (get verified entity))
-    (err u404)
-  )
-)
+(define-read-only (get-generation-in-range (node-id (string-ascii 24)) (start-time uint) (end-time uint))
+  (let ((current-time block-height))
+    (asserts! (<= end-time current-time) (err u3)) ;; End time cannot be in the future
+    (asserts! (<= start-time end-time) (err u4)) ;; Start time must be before end time
 
-;; Get entity details
-(define-read-only (get-entity (entity-id uint))
-  (map-get? entities { entity-id: entity-id })
-)
-
-;; Transfer admin rights
-(define-public (transfer-admin (new-admin principal))
-  (begin
-    (asserts! (is-eq tx-sender (var-get admin)) (err u403))
-    (var-set admin new-admin)
-    (ok true)
+    ;; Note: In a real implementation, we would need to iterate through the range
+    ;; and collect all events. This is simplified for clarity.
+    (ok { start-time: start-time, end-time: end-time })
   )
 )
